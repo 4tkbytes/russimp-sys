@@ -1,5 +1,5 @@
 use flate2::read::GzDecoder;
-use std::{env, fs, io, path::PathBuf};
+use std::{env, fs::{self, File}, io, path::PathBuf};
 
 struct Library(&'static str, &'static str);
 
@@ -64,6 +64,25 @@ fn lib_names() -> Vec<Library> {
 fn build_from_source() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
+    // Ensure the assimp source directory is cloned and can compile. The lack of this was causing the previous issue. 
+    let assimp_src_dir = match ensure_submodules() {
+        Ok(dir) => dir,
+        Err(e) => panic!(
+"
+Failed to fetch the assimp source, specifically \"https://github.com/assimp/assimp\". 
+
+This create requires the assimp git repository source in order to work (duh), so here are your options.
+Either:
+1. Use the 'prebuilt' feature. This will use a prebuilt dll from the russimp-sys repository releases. 
+2. Download assimp system-wide and don't use any features (as the build script will fetch for you).
+3. Make sure your network works because your wifi might be borked. 
+
+Specific error message: {}
+
+Sorry :(
+", e),
+    };
+
     // Build Zlib from source?
     let build_zlib = if build_zlib() { "ON" } else { "OFF" };
 
@@ -75,7 +94,7 @@ fn build_from_source() {
     };
 
     // CMake
-    let mut cmake = cmake::Config::new("assimp");
+    let mut cmake = cmake::Config::new(&assimp_src_dir);
     cmake
         .profile("Release")
         .static_crt(true)
@@ -106,6 +125,79 @@ fn build_from_source() {
         "cargo:rustc-link-search=native={}",
         cmake_dir.join("bin").display()
     );
+}
+
+/// This function ensures the assimp library is downloaded for building from source, which caused the static-link feature to break
+/// 
+/// Reference: https://github.com/jkvargas/russimp-sys/issues/49
+fn ensure_submodules()
+ -> Result<PathBuf, Box<dyn std::error::Error>> 
+ {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let assimp_dir = out_dir.join("assimp");
+    let assimp_cmake = assimp_dir.join("CMakeLists.txt");
+    println!("cargo:warning=out_dir: {:?}", &out_dir);
+
+    if !assimp_cmake.exists() {
+        // clone repo
+        println!("cargo:warning=assimp aint found, cloning...");
+
+        if assimp_dir.exists() {
+            std::fs::remove_dir_all(&assimp_dir)?;
+        }
+
+        let zip_url = "https://github.com/assimp/assimp/archive/refs/heads/master.zip";
+        let zip_path = out_dir.join("assimp.zip");
+
+        println!("cargo:warning=downloading from github");
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()?;
+
+        let response = client.get(zip_url).send()?;
+        let bytes = response.bytes()?;
+        std::fs::write(&zip_path, &bytes)?;
+
+        println!("cargo:warning=extracting zip file contents");
+        // inflate zip
+        let file = File::open(&zip_path)?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let outpath = match file.enclosed_name() {
+                Some(path) => out_dir.join(path),
+                None => continue,
+            };
+            
+            if (*file.name()).ends_with('/') {
+                std::fs::create_dir_all(&outpath)?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    if !p.exists() {
+                        std::fs::create_dir_all(&p)?;
+                    }
+                }
+                let mut outfile = File::create(&outpath)?;
+                std::io::copy(&mut file, &mut outfile)?;
+            }
+        }
+
+        println!("cargo:warning=extracting zip file contents");
+        let extracted_dir = out_dir.join("assimp-master");
+        if extracted_dir.exists() {
+            std::fs::rename(&extracted_dir, &assimp_dir)?;
+        }
+
+        let _ = std::fs::remove_file(&zip_path);
+
+        if !assimp_cmake.exists() {
+            return Err("CMakeLists.txt not found after extracting assimp".into());
+        }
+
+        println!("cargo:warning=cloning went well, happy :)");
+    }
+
+    Ok(assimp_dir)
 }
 
 fn link_from_package() {
@@ -179,13 +271,21 @@ fn main() {
         link_from_package();
     }
 
+    let assimp_include_path = if build_assimp() {
+        out_dir.join("assimp").join("include").join("assimp")
+    } else {
+        PathBuf::from("assimp").join("include").join("assimp")
+    };
+
     // assimp/defs.h requires config.h to be present, which is generated at build time when building
     // from the source code (which is disabled by default).
     // In this case, place an empty config.h file in the include directory to avoid compilation errors.
-    let config_file = "assimp/include/assimp/config.h";
-    let config_exists = fs::metadata(config_file).is_ok();
+    let config_file = assimp_include_path.join("config.h");
+    let config_exists = config_file.clone().exists();
     if !config_exists {
-        fs::write(config_file, "").expect(
+        fs::write(&config_file, "")
+        // fix up this error message
+        .expect(
             r#"Unable to write config.h to assimp/include/assimp/,
             make sure you cloned submodules with "git submodule update --init --recursive""#,
         );
