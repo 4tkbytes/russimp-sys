@@ -182,7 +182,6 @@ fn ensure_submodules()
             }
         }
 
-        println!("cargo:warning=extracting zip file contents");
         let extracted_dir = out_dir.join("assimp-master");
         if extracted_dir.exists() {
             std::fs::rename(&extracted_dir, &assimp_dir)?;
