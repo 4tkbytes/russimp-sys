@@ -66,21 +66,8 @@ fn build_from_source() {
 
     // Ensure the assimp source directory is cloned and can compile. The lack of this was causing the previous issue. 
     let assimp_src_dir = match ensure_submodules() {
-        Ok(dir) => dir,
-        Err(e) => panic!(
-"
-Failed to fetch the assimp source, specifically \"https://github.com/assimp/assimp\". 
-
-This create requires the assimp git repository source in order to work (duh), so here are your options.
-Either:
-1. Use the 'prebuilt' feature. This will use a prebuilt dll from the russimp-sys repository releases. 
-2. Download assimp system-wide and don't use any features (as the build script will fetch for you).
-3. Make sure your network works because your wifi might be borked. 
-
-Specific error message: {}
-
-Sorry :(
-", e),
+        Ok(path) => path,
+        Err(e) => {show_error_mgs(e); panic!("Extra panic! Ahhh!")},
     };
 
     // Build Zlib from source?
@@ -116,6 +103,19 @@ Sorry :(
 
     let cmake_dir = cmake.build();
 
+    let assimp_lib_path = cmake_dir.join("lib").join("assimp.lib");
+    if !assimp_lib_path.exists() {
+        panic!(
+"
+Error while compiling russimp-sys:
+
+assimp.lib was not found (specifically at {}). The assimp build may have failed or made libraries in a different location. 
+Please check the CMake output and ensure all deps are installed. 
+",
+            assimp_lib_path.display()
+        );
+    }
+
     println!(
         "cargo:rustc-link-search=native={}",
         cmake_dir.join("lib").display()
@@ -146,7 +146,8 @@ fn ensure_submodules()
             std::fs::remove_dir_all(&assimp_dir)?;
         }
 
-        let zip_url = "https://github.com/assimp/assimp/archive/refs/heads/master.zip";
+        // let zip_url = "https://github.com/assimp/assimp/archive/refs/heads/master.zip";
+        let zip_url = "https://github.com/assimp/assimp/archive/6a08c39e3a91ef385e76515cfad86aca4bfd57ff.zip";
         let zip_path = out_dir.join("assimp.zip");
 
         println!("cargo:warning=downloading from github");
@@ -182,7 +183,7 @@ fn ensure_submodules()
             }
         }
 
-        let extracted_dir = out_dir.join("assimp-master");
+        let extracted_dir = out_dir.join("assimp-6a08c39e3a91ef385e76515cfad86aca4bfd57ff");
         if extracted_dir.exists() {
             std::fs::rename(&extracted_dir, &assimp_dir)?;
         }
@@ -252,6 +253,25 @@ fn link_from_package() {
     );
 }
 
+fn show_error_mgs(e: Box<dyn std::error::Error>) {
+    panic!(
+"
+Failed to fetch the assimp source, specifically \"https://github.com/assimp/assimp/tree/6a08c39e3a91ef385e76515cfad86aca4bfd57ff\". 
+
+This create requires the assimp git repository source in order to work (duh), so here are your options.
+Either:
+1. Use the 'prebuilt' feature. This will use a prebuilt dll from the russimp-sys repository releases. 
+2. Download assimp system-wide and don't use any features (as the build script will fetch for you).
+3. Make sure your network works because your wifi might be borked. 
+
+=====================================================================================================================================
+Specific error message: {}
+=====================================================================================================================================
+
+Sorry :(
+", e)
+}
+
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -270,15 +290,16 @@ fn main() {
         link_from_package();
     }
 
-    let assimp_include_path = if build_assimp() {
-        out_dir.join("assimp").join("include").join("assimp")
-    } else {
-        PathBuf::from("assimp").join("include").join("assimp")
+    let assimp_include_path = out_dir.join("assimp").join("include").join("assimp");
+    match ensure_submodules() {
+        Ok(_) => {},
+        Err(e) => {show_error_mgs(e); panic!("Extra panic! Ahhh!")},
     };
 
     // assimp/defs.h requires config.h to be present, which is generated at build time when building
     // from the source code (which is disabled by default).
     // In this case, place an empty config.h file in the include directory to avoid compilation errors.
+    println!("{:?}", assimp_include_path);    
     let config_file = assimp_include_path.join("config.h");
     let config_exists = config_file.clone().exists();
     if !config_exists {
@@ -293,7 +314,7 @@ fn main() {
     bindgen::builder()
         .header("wrapper.h")
         .clang_arg(format!("-I{}", out_dir.join(static_lib()).join("include").display()))
-        .clang_arg(format!("-I{}", "assimp/include"))
+        .clang_arg(format!("-I{}", out_dir.join("assimp").join("include").display()))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .allowlist_type("ai.*")
         .allowlist_function("ai.*")
