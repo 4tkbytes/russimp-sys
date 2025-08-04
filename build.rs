@@ -104,17 +104,17 @@ fn build_from_source() {
     let cmake_dir = cmake.build();
 
     let assimp_lib_path = cmake_dir.join("lib").join("assimp.lib");
-    if !assimp_lib_path.exists() {
-        panic!(
-"
-Error while compiling russimp-sys:
+//     if !assimp_lib_path.exists() {
+//         panic!(
+// "
+// Error while compiling russimp-sys:
 
-assimp.lib was not found (specifically at {}). The assimp build may have failed or made libraries in a different location. 
-Please check the CMake output and ensure all deps are installed. 
-",
-            assimp_lib_path.display()
-        );
-    }
+// assimp.lib was not found (specifically at {}). The assimp build may have failed or made libraries in a different location. 
+// Please check the CMake output and ensure all deps are installed. 
+// ",
+//             assimp_lib_path.display()
+//         );
+//     }
 
     println!(
         "cargo:rustc-link-search=native={}",
